@@ -1,0 +1,201 @@
+---
+title: "Practical Machine Learning - Assigment"
+author: "Elson Felix Mendes Filho"
+output: 
+  html_document: 
+    fig_height: 6
+    fig_width: 6
+    keep_md: yes
+---
+#  Qualitative Human Activity Recognition 
+
+## Introduction
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, I used data from accelerometers on the belt, forearm, arm, and dumbell of different participants to create models to predict if they performed barbell lifts correctly or incorrectly. 
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A  corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+The publication and the datasets, but also more information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+In this Assigment it was created this report describing the modelling process using R and the Caret package. The entire R code to built the models and to generate this report is embeded in the Rmd file (available on the Github repo), only a small part of the actual code was sufaced in the report, when relevant.
+
+## Data
+The training data for this project are available here: 
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>.
+And the test data are available here: 
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>.
+
+```{r echo=FALSE, eval=TRUE, results='hide',  message=FALSE, warning=FALSE}
+#### Necessary Packages
+library(caret)
+library(ggplot2)
+library(rpart)
+library(rattle)
+library(randomForest)
+library(gbm)
+
+#### Load the datasets
+trainRaw <- read.csv("pml-training.csv")
+testRaw <- read.csv("pml-testing.csv")
+
+```
+These datasets were downloaded and read into two data frames: *trainRaw* containing `r nrow(trainRaw)` rows and *testRaw* with `r nrow(testRaw)` rows. There are `r ncol(trainRaw)` variables representing the data from accelerometers. The "classe" variable in the *trainRaw* set is the outcome to predict. Figure 1 shows a chart of the frequency for each classe.
+
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+ggplot(data=trainRaw, aes(x=classe)) + 
+      geom_histogram(aes(fill=0)) +
+      theme_light() +
+      theme(legend.position = "none" )+
+      labs(title='Figure 1 - Frequency of each classe', x='classe')
+```
+
+### Data Cleanning
+In a quick exploration with the data, one can observe that several variables contains almost only missing values (NA). In fact, there are only `r sum(complete.cases(trainRaw))` complete cases.
+Using the code shown below, it was removed the variables containing missing values, non-numerical variables, as well as other irrelevant variables. The same variables were removed from the test dataset.
+```{r echo=TRUE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+## Get rid of variables when NA appears on more than 97% of the times 
+trainNoNA <- trainRaw[,colSums(is.na(trainRaw)) < nrow(trainRaw)*0.97]
+## Get rid of non numerical variables
+trainNum <- trainNoNA[, sapply(trainNoNA, is.numeric)]
+## Remove other non relvant variables like: x, timestamp and window 
+trainRel <- trainNum[, !grepl("^X|timestamp|window", names(trainNum))]
+## Include the classe variable back, as it was removed in a previous step
+trainClean <- trainRel; trainClean$classe <- trainRaw$classe
+
+## select the same variables for the test set
+testClean <- testRaw[, names(trainRel)]
+```
+The cleaned training set, *trainClean*, contains the same number of rows (`r nrow(trainClean)`), but only `r ncol(trainClean)` variables. And *testClean* with `r nrow(testClean)` rows and the same variables (excluding the outcome: classe).
+
+### Data Partitioning
+The cleaned training set was split into training (80%) and validation (20%) data sets. The validation data set was used to assess and compare the performance of the models developed.
+```{r echo=TRUE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+# Set a seed to ensure reproducibility
+set.seed(1234)
+# Define the partitions
+inTrain <- createDataPartition(trainClean$classe, p=0.80, list=FALSE)
+# Generate the data partitions
+trainData <- trainClean[inTrain, ]; validData <- trainClean[-inTrain, ]
+
+```
+At this point, the training data *trainData* contains `r nrow(trainData)` rows and *validData* `r nrow(validData)` rows.
+
+## Data Modeling
+### Simple Classification Tree
+The first model developed was a simple Classification Tree, using the code below, it was generated the Classification Tree shown in Figure 2.
+```{r echo=TRUE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+#### Fit a simple Classification Tree model
+modelTree <- train(classe ~., method="rpart", data=trainData)
+```
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+#### Plot the Tree
+fancyRpartPlot(modelTree$finalModel, main = "Figure 2 - simple Classification Tree")
+
+#### Predict new values of the validation set
+predTree <- predict(modelTree, newdata=validData)
+
+#### Generate the confusion matrix for the validation set
+cmTree <- confusionMatrix(predTree, validData$classe)
+cmTableTree <- as.data.frame(cmTree$table)
+```
+This simple Classfication Tree was applied to the validation set, and its overall accuracy was  `r format(cmTree$overall['Accuracy'], digits=5, nsmall=2)` and Kappa was `r format(cmTree$overall['Kappa'], digits=5, nsmall=2)`. Figure 3 shows its Confusion Matrix.
+
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+#### Plot the confusion matrix
+ggplot(data=cmTableTree) + 
+      geom_tile(aes(x=Reference, y=Prediction,fill=Freq),color="black",size=0.1) +
+      labs(x="Reference",y="Prediction") +
+      scale_fill_gradient(limits=c(1, 350),low="white",high="red", na.value = "white")+
+      geom_tile(data=subset(cmTableTree, as.character(Reference)==as.character(Prediction)),
+                aes(x=Reference,y=Prediction),
+                color="black",size=0.8, fill="lightgreen", alpha=1)+
+      geom_text(aes(x=Reference,y=Prediction, label=sprintf("%d", Freq)), size=4, colour="black")+
+      theme_light() +
+      theme(legend.position = "none") +
+      labs(title='Figure 3 - Classification Tree - Confusion Matrix - Validation set')
+```
+Given the poor performance achieved by this simple Classification Tree, it was decided to use more advanced approaches.
+
+### Random Forest
+In this second attempt it was developed a Random Forest with 7-fold cross validation, using the code below.
+```{r echo=TRUE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+#### Fit Random Forest with 7-fold cross validation 
+controlRF <- trainControl(method="cv", 7)
+modelRF <- train(classe ~ ., data=trainData, method="rf", trControl=controlRF, ntree=101)
+```
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+#### Predict new values of the validation set
+predRF <- predict(modelRF, newdata=validData)
+
+#### Generate the confusion matrix for the validation set
+cmRF <- confusionMatrix(predRF, validData$classe)
+cmTableRF <- as.data.frame(cmRF$table)
+```
+The Random Forest was applied to the validation set, and its overall accuracy was  `r format(cmRF$overall['Accuracy'], digits=5, nsmall=2)` and Kappa was `r format(cmRF$overall['Kappa'], digits=5, nsmall=2)`. Figure 4 shows its Confusion Matrix.
+
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+#### Plot the confusion matrix
+ggplot(data=cmTableRF) + 
+      geom_tile(aes(x=Reference, y=Prediction,fill=Freq),color="black",size=0.1) +
+      labs(x="Reference",y="Prediction") +
+      scale_fill_gradient(limits=c(0, 9),low="white",high="red", na.value = "white")+
+      geom_tile(data=subset(cmTableRF, as.character(Reference)==as.character(Prediction)),
+                aes(x=Reference,y=Prediction),
+                color="black",size=0.8, fill="lightgreen", alpha=1)+
+      geom_text(aes(x=Reference,y=Prediction, label=sprintf("%d", Freq)), size=4, colour="black")+
+      theme_light() +
+      theme(legend.position = "none") +
+      labs(title='Figure 4 - Random Forest - Confusion Matrix - Validation set')
+```
+The performance achieved by the Random Forest was much better than the simple Classsfication Tree. Before concluding this, it was used yet another advanced approach.
+
+### Stochastic Gradient Boosting
+In this last attempt, it was developed a Stochastic Gradient Boosting model (GBM), this technique produces a prediction model in the form of an ensemble of weak prediction models. The model was created using three separate 10-fold cross-validations as the resampling scheme, using the code below.
+```{r echo=TRUE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+#### Fit GBM
+controlGBM <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+modelGBM <- train(classe ~ ., data=trainData, method="gbm", trControl=controlGBM, verbose=FALSE)
+```
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+#### Predict new values of the validation set
+predGBM <- predict(modelGBM, newdata= validData)
+#### Generate the confusion matrix for the validation set
+cmGBM <- confusionMatrix(predGBM, validData$classe)
+cmTableGBM <- as.data.frame(cmGBM$table)
+```
+The Boosting model was applied to the validation set, and its overall accuracy was  `r format(cmGBM$overall['Accuracy'], digits=5, nsmall=2)` and Kappa was `r format(cmGBM$overall['Kappa'], digits=5, nsmall=2)`. Figure 5 shows its Confusion Matrix.
+
+```{r echo=FALSE, eval=TRUE,  fig.align='center'}
+#### Plot the confusion matrix
+ggplot(data=cmTableGBM) + 
+      geom_tile(aes(x=Reference, y=Prediction,fill=Freq),color="black",size=0.1) +
+      labs(x="Reference",y="Prediction") +
+      scale_fill_gradient(limits=c(0, 30),low="white",high="red", na.value = "white")+
+      geom_tile(data=subset(cmTableGBM, as.character(Reference)==as.character(Prediction)),
+                aes(x=Reference,y=Prediction),
+                color="black",size=0.8, fill="lightgreen", alpha=1)+
+      geom_text(aes(x=Reference,y=Prediction, label=sprintf("%d", Freq)), size=4, colour="black")+
+      theme_light() +
+      theme(legend.position = "none") +
+      labs(title='Figure 5 - GBM - Confusion Matrix - Validation set')
+```
+
+### The Champion Model
+The Random Forest was selected as the champion model, as it has provided a better Accuracy in the validation dataset of `r format(cmRF$overall['Accuracy'], digits=5, nsmall=2)`. The expected out-of-sample error for this model is: 100 -`r format(cmRF$overall['Accuracy']*100, digits=5, nsmall=2)` = `r format(100 - cmRF$overall['Accuracy']*100, digits=5, nsmall=2)`%. 
+
+## Predict using the Test data and submit results
+The final part of this assignment was to apply the selected model to the (hold-out) Test dataset (*testClean*), it was used the code shown below.
+```{r echo=TRUE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+TestpredRF <- predict(modelRF, newdata=testClean)
+```
+The results were: `r TestpredRF`. And finally the provided function *pml_write_files* was used to separate these answers and generate a text file for each test case, to be submited.
+
+```{r echo=FALSE, eval=TRUE, results='hide', message=FALSE, warning=FALSE}
+pml_write_files = function(x){
+      n = length(x)
+      for(i in 1:n){
+            filename = paste0("problem_id_",i,".txt")
+            write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+      }
+}
+
+pml_write_files(TestpredRF)
+```
